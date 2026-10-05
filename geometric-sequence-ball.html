@@ -1,0 +1,1948 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sucesión geométrica: la pelota que rebota</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #F3EEDF;
+    overflow: hidden;
+  }
+  body {
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+  #stage {
+    width: min(100vw, 100vh);
+    width: min(100vw, 100dvh);
+    height: min(100vw, 100vh);
+    height: min(100vw, 100dvh);
+    background: #F3EEDF;
+    overflow: hidden;
+    display: block;
+    user-select: none;
+    -webkit-user-select: none;
+    text-rendering: geometricPrecision;
+  }
+  #grain {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 3;
+    mix-blend-mode: multiply;
+    opacity: 0.5;
+  }
+</style>
+</head>
+<body>
+<svg id="stage" viewBox="0 0 720 720" preserveAspectRatio="xMidYMid meet" role="img"
+  aria-label="Animación educativa: una pelota se deja caer desde 10 metros y cada rebote alcanza el 80 por ciento de la altura anterior. El quinto rebote alcanza aproximadamente 3.28 metros.">
+  <defs id="defs"></defs>
+  <g id="camera">
+    <g id="introScene"></g>
+    <g id="bounceScene"></g>
+    <g id="sequenceScene"></g>
+    <g id="formulaScene"></g>
+    <g id="finalScene"></g>
+  </g>
+  <g id="overlay"></g>
+</svg>
+<div id="grain" aria-hidden="true"></div>
+<script>
+'use strict';
+
+/* =========================================================
+   1. MATHEMATICAL STATE
+   The sequence is the only source of heights, labels and formulas.
+   ========================================================= */
+const initialHeight = 10;
+const ratio = 0.8;
+const gravity = 9.81;
+const PIXELS_PER_METER = 50;
+
+function calculateBounceHeight(n) {
+  return initialHeight * Math.pow(ratio, n);
+}
+function metersToPixels(meters) {
+  return meters * PIXELS_PER_METER;
+}
+function formatNumber(x) {
+  return String(Math.round(x * 1e10) / 1e10);
+}
+
+const heights = [0, 1, 2, 3, 4, 5].map(calculateBounceHeight);
+const hPx = heights.map(metersToPixels);
+const heightLabels = heights.map(formatNumber);
+
+(function selfCheck() {
+  const expected = ['10', '8', '6.4', '5.12', '4.096', '3.2768'];
+  if (heightLabels.join(',') !== expected.join(',')) {
+    console.error('Altura inesperada', heightLabels);
+  }
+  if (formatNumber(Math.pow(ratio, 5)) !== '0.32768') {
+    console.error('r^5 inesperado', formatNumber(Math.pow(ratio, 5)));
+  }
+  if (calculateBounceHeight(5).toFixed(2) !== '3.28') {
+    console.error('Redondeo inesperado');
+  }
+  if (formatNumber(ratio * 100) !== '80') console.error('Porcentaje inesperado');
+  for (let i = 1; i < hPx.length; i++) {
+    if (Math.abs(hPx[i] / hPx[i - 1] - ratio) > 1e-9) {
+      console.error('La altura en píxeles no conserva la razón', i);
+    }
+  }
+})();
+
+/* =========================================================
+   2. VISUAL CONSTANTS
+   ========================================================= */
+const PALETTE = {
+  paper: '#F3EEDF',
+  ink: '#332E29',
+  muted: '#70685F',
+  blue: '#4585A8',
+  orange: '#D8863B',
+  green: '#65966A',
+  red: '#C96B5A'
+};
+const FONTS = {
+  hand: '"Segoe Print", "Comic Sans MS", "Trebuchet MS", sans-serif',
+  math: 'Georgia, "Times New Roman", serif'
+};
+const GROUND_Y = 1000;
+const DROP_X = 360;
+const POLE_X = 300;
+const BALL_R = 16;
+const SPREAD = 12;
+const DURATION = 71;
+const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const NS = 'http://www.w3.org/2000/svg';
+const stage = document.getElementById('stage');
+const defs = document.getElementById('defs');
+const cameraG = document.getElementById('camera');
+const introScene = document.getElementById('introScene');
+const bounceScene = document.getElementById('bounceScene');
+const sequenceScene = document.getElementById('sequenceScene');
+const formulaScene = document.getElementById('formulaScene');
+const finalScene = document.getElementById('finalScene');
+const overlay = document.getElementById('overlay');
+
+/* Geometry: each arc is the parabola of its own rebound height. */
+const bounces = [];
+(function buildBounces() {
+  let x = DROP_X;
+  for (let n = 1; n <= 5; n++) {
+    const hp = hPx[n];
+    const w = SPREAD * Math.sqrt(hp);
+    const start = x;
+    const end = x + w;
+    bounces.push({
+      n: n,
+      height: heights[n],
+      hPx: hp,
+      start: start,
+      end: end,
+      w: w,
+      apexX: (start + end) / 2,
+      apexY: GROUND_Y - hp,
+      label: heightLabels[n] + ' m'
+    });
+    x = end;
+  }
+})();
+
+function halfFlight(h) {
+  return Math.sqrt((2 * h) / gravity);
+}
+
+function buildMotion() {
+  const segments = [];
+  const apexAt = {};
+  const impactAt = [];
+  const drop = { t0: 10.35, t1: 10.35 + halfFlight(initialHeight) };
+  impactAt.push(drop.t1);
+  let t = drop.t1 + 0.1;
+  const up1 = halfFlight(heights[1]);
+  segments.push({ kind: 'up', n: 1, t0: t, t1: t + up1, k: 1 });
+  t += up1;
+  apexAt[1] = t;
+  segments.push({ kind: 'hold', n: 1, t0: t, t1: 18.6 });
+  segments.push({ kind: 'down', n: 1, t0: 18.6, t1: 18.6 + up1, k: 1 });
+  t = 18.6 + up1;
+  impactAt.push(t);
+  for (let n = 2; n <= 5; n++) {
+    t += 0.1;
+    const ht = halfFlight(heights[n]);
+    const k = n === 5 ? 1 : 0.9;
+    segments.push({ kind: 'up', n: n, t0: t, t1: t + ht, k: k });
+    t += ht;
+    apexAt[n] = t;
+    if (n < 5) {
+      segments.push({ kind: 'down', n: n, t0: t, t1: t + ht, k: k });
+      t += ht;
+      impactAt.push(t);
+    }
+  }
+  const impacts = [
+    { t0: impactAt[0], x: DROP_X, hPrev: heights[0] },
+    { t0: impactAt[1], x: bounces[0].end, hPrev: heights[1] },
+    { t0: impactAt[2], x: bounces[1].end, hPrev: heights[2] },
+    { t0: impactAt[3], x: bounces[2].end, hPrev: heights[3] },
+    { t0: impactAt[4], x: bounces[3].end, hPrev: heights[4] }
+  ];
+  return { drop: drop, segments: segments, apexAt: apexAt, impacts: impacts };
+}
+const motion = buildMotion();
+
+/* =========================================================
+   3. UTILITIES
+   ========================================================= */
+function mulberry32(a) {
+  let s = a >>> 0;
+  return function () {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function clamp01(t) { return t < 0 ? 0 : t > 1 ? 1 : t; }
+function linear(t) { return t; }
+function easeInQuad(t) { return t * t; }
+function easeOutQuad(t) { return t * (2 - t); }
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+function easeInOutSine(t) { return -(Math.cos(Math.PI * t) - 1) / 2; }
+function easeOutBack(t, s) {
+  const c1 = s == null ? 1.70158 : s;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+function cameraEase(t) { return easeOutBack(easeInQuad(clamp01(t)), 0.45); }
+
+function timeWarpUp(a, k) {
+  return 0.5 * (a + (k * Math.sin(Math.PI * a)) / Math.PI);
+}
+function timeWarpDown(d, k) {
+  return 0.5 + 0.5 * (d - (k * Math.sin(Math.PI * d)) / Math.PI);
+}
+
+function variedDrawEase(seed) {
+  const rng = mulberry32(seed);
+  const n = 6;
+  const weights = [];
+  for (let i = 0; i < n; i++) weights.push(0.7 + rng() * 0.6);
+  const sum = weights.reduce(function (a, b) { return a + b; }, 0);
+  const cum = [0];
+  weights.forEach(function (w) { cum.push(cum[cum.length - 1] + w / sum); });
+  return function (t) {
+    const u = easeInOutCubic(clamp01(t));
+    const x = u * n;
+    const i = Math.min(n - 1, Math.floor(x));
+    const f = x - i;
+    return cum[i] + f * (cum[i + 1] - cum[i]);
+  };
+}
+
+function catmullRom(pts) {
+  if (pts.length < 2) return '';
+  let d = 'M ' + pts[0][0].toFixed(2) + ' ' + pts[0][1].toFixed(2);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ' C ' + c1x.toFixed(2) + ' ' + c1y.toFixed(2) + ', ' + c2x.toFixed(2) + ' ' + c2y.toFixed(2) + ', ' + p2[0].toFixed(2) + ' ' + p2[1].toFixed(2);
+  }
+  return d;
+}
+
+function roughLine(x1, y1, x2, y2, seed, opts) {
+  const o = opts || {};
+  const rng = mulberry32(seed);
+  const n = o.n || 8;
+  const amp = o.amp == null ? 1.05 : o.amp;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const bow = Math.sin(Math.PI * t) * (o.bow == null ? 0.7 : o.bow);
+    const pin = o.pin && (i === 0 || i === n);
+    const j = pin ? 0 : (rng() - 0.5) * 2 * amp;
+    const over = i === n ? (o.overshoot || 0) : 0;
+    pts.push([
+      x1 + dx * t + nx * (j + bow) + (dx / len) * over,
+      y1 + dy * t + ny * (j + bow) + (dy / len) * over
+    ]);
+  }
+  return catmullRom(pts);
+}
+
+function roughCircle(cx, cy, r, seed) {
+  const rng = mulberry32(seed);
+  const n = 8;
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const a = (i / n) * Math.PI * 2 + 0.15;
+    const rr = r * (1 + (rng() - 0.5) * 0.03);
+    pts.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr]);
+  }
+  return catmullRom(pts);
+}
+
+function arrowPath(x1, y1, x2, y2, seed) {
+  const shaft = roughLine(x1, y1, x2, y2, seed, { pin: true, amp: 0.55, n: 4, bow: 0.4, overshoot: 0 });
+  const ang = Math.atan2(y2 - y1, x2 - x1);
+  const s = 8;
+  const a1 = ang + 2.55;
+  const a2 = ang - 2.55;
+  return shaft +
+    ' M ' + (x2 + Math.cos(a1) * s).toFixed(2) + ' ' + (y2 + Math.sin(a1) * s).toFixed(2) +
+    ' L ' + x2.toFixed(2) + ' ' + y2.toFixed(2) +
+    ' L ' + (x2 + Math.cos(a2) * s).toFixed(2) + ' ' + (y2 + Math.sin(a2) * s).toFixed(2);
+}
+
+function quadPoint(p0, p1, p2, u) {
+  const m = 1 - u;
+  return [
+    m * m * p0[0] + 2 * m * u * p1[0] + u * u * p2[0],
+    m * m * p0[1] + 2 * m * u * p1[1] + u * u * p2[1]
+  ];
+}
+function buildLUT(p0, p1, p2) {
+  const steps = 64;
+  const lens = [0];
+  let prev = p0;
+  let acc = 0;
+  for (let i = 1; i <= steps; i++) {
+    const pt = quadPoint(p0, p1, p2, i / steps);
+    acc += Math.hypot(pt[0] - prev[0], pt[1] - prev[1]);
+    lens.push(acc);
+    prev = pt;
+  }
+  return lens;
+}
+function lutAt(lut, u) {
+  const steps = lut.length - 1;
+  const x = clamp01(u) * steps;
+  const i = Math.min(steps - 1, Math.floor(x));
+  const f = x - i;
+  return lut[i] + (lut[i + 1] - lut[i]) * f;
+}
+
+let uid = 0;
+function el(name, attrs, parent) {
+  const node = document.createElementNS(NS, name);
+  if (attrs) {
+    for (const k in attrs) {
+      if (attrs[k] != null) node.setAttribute(k, attrs[k]);
+    }
+  }
+  if (parent) parent.appendChild(node);
+  return node;
+}
+function setAttr(node, name, value) {
+  const v = typeof value === 'number' ? String(Math.round(value * 100) / 100) : String(value);
+  if (!node._a) node._a = Object.create(null);
+  if (node._a[name] === v) return;
+  node._a[name] = v;
+  node.setAttribute(name, v);
+}
+function forceAttr(node, name, value) {
+  if (node._a) delete node._a[name];
+  setAttr(node, name, value);
+}
+
+const resets = [];
+function remember(fn) { resets.push(fn); }
+
+function inkPath(d, parent, extra) {
+  const attrs = {
+    d: d,
+    fill: 'none',
+    stroke: PALETTE.ink,
+    'stroke-width': 1.75,
+    'stroke-linecap': 'round',
+    'stroke-linejoin': 'round',
+    opacity: 0
+  };
+  if (extra) for (const k in extra) attrs[k] = extra[k];
+  return el('path', attrs, parent);
+}
+
+function handText(parent, str, x, y, size, opts) {
+  const o = opts || {};
+  const t = el('text', {
+    x: x,
+    y: y,
+    fill: o.fill || PALETTE.ink,
+    'font-family': o.math ? FONTS.math : FONTS.hand,
+    'font-size': size,
+    'font-style': o.italic ? 'italic' : 'normal',
+    'text-anchor': o.anchor || 'start',
+    opacity: 0
+  }, parent);
+  t.textContent = str;
+  if (o.exact) t.setAttribute('data-exact', o.exact);
+  else t.setAttribute('data-exact', str);
+  if (o.safe) t.setAttribute('data-safe', '1');
+  return t;
+}
+
+/* Subscripts and superscripts use dy on tspans so the baseline stays exact. */
+function mathText(parent, x, y, size, parts, exact, opts) {
+  const o = opts || {};
+  const t = el('text', {
+    x: x,
+    y: y,
+    fill: o.fill || PALETTE.ink,
+    'font-family': FONTS.math,
+    'font-size': size,
+    'text-anchor': o.anchor || 'start',
+    opacity: 0
+  }, parent);
+  t.setAttribute('data-exact', exact);
+  if (o.safe) t.setAttribute('data-safe', '1');
+  let dyEm = 0;
+  parts.forEach(function (p) {
+    const target = p.sup ? -0.42 : p.sub ? 0.22 : 0;
+    const span = el('tspan', null, t);
+    span.textContent = p.s;
+    const delta = target - dyEm;
+    if (Math.abs(delta) > 0.001) span.setAttribute('dy', delta.toFixed(3) + 'em');
+    dyEm = target;
+    if (p.sub || p.sup) span.setAttribute('font-size', '0.62em');
+    if (p.fill) span.setAttribute('fill', p.fill);
+    if (p.italic) span.setAttribute('font-style', 'italic');
+  });
+  return t;
+}
+
+function fitTextToWidth(node, maxWidth, minSize) {
+  let size = parseFloat(node.getAttribute('font-size'));
+  let guard = 0;
+  while (node.getComputedTextLength() > maxWidth && size > minSize && guard < 40) {
+    size -= 0.5;
+    node.setAttribute('font-size', size);
+    guard++;
+  }
+}
+
+function paperGrain() {
+  const fine = "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.42 0 0 0 0 0.36 0 0 0 0 0.26 0 0 0 0.14 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>";
+  const mottling = "<svg xmlns='http://www.w3.org/2000/svg' width='640' height='640'><filter id='m'><feTurbulence type='fractalNoise' baseFrequency='0.012' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.55 0 0 0 0 0.45 0 0 0 0 0.3 0 0 0 0.05 0'/></filter><rect width='100%' height='100%' filter='url(%23m)'/></svg>";
+  const grain = document.getElementById('grain');
+  grain.style.backgroundImage =
+    "url(\"data:image/svg+xml;utf8," + fine.replace(/#/g, '%23') + "\"), url(\"data:image/svg+xml;utf8," + mottling.replace(/#/g, '%23') + "\")";
+  grain.style.backgroundSize = '220px 220px, 640px 640px';
+}
+
+/* =========================================================
+   4. SCENE CONSTRUCTION
+   ========================================================= */
+const nodes = {};
+
+function createScene() {
+  paperGrain();
+  createDefs();
+  createIntroScene();
+  createBounceDiagram();
+  createBall();
+  createSequenceDiagram();
+  createFormulaScene();
+  createFinalScene();
+  createOverlay();
+}
+
+function createDefs() {
+  function grad(id, x1, y1, x2, y2) {
+    const g = el('linearGradient', { id: id, x1: x1, y1: y1, x2: x2, y2: y2, gradientUnits: 'userSpaceOnUse' }, defs);
+    el('stop', { offset: '0', 'stop-color': PALETTE.paper, 'stop-opacity': '1' }, g);
+    el('stop', { offset: '1', 'stop-color': PALETTE.paper, 'stop-opacity': '0' }, g);
+  }
+  grad('fadeL', '0', '0', '28', '0');
+  grad('fadeR', '720', '0', '692', '0');
+  grad('fadeT', '0', '0', '0', '28');
+  grad('fadeB', '0', '720', '0', '692');
+  const vig = el('radialGradient', { id: 'vig', cx: '50%', cy: '46%', r: '68%' }, defs);
+  el('stop', { offset: '62%', 'stop-color': PALETTE.paper, 'stop-opacity': '0' }, vig);
+  el('stop', { offset: '100%', 'stop-color': '#E7DCC6', 'stop-opacity': '0.45' }, vig);
+}
+
+function createIntroScene() {
+  nodes.margin = inkPath(roughLine(92, 210, 92, 1960, 3, { amp: 1.4, n: 14, bow: 2, overshoot: 0 }), introScene, {
+    stroke: PALETTE.red, 'stroke-width': 1.25, opacity: 0
+  });
+
+  const groundD = roughLine(140, GROUND_Y, 860, GROUND_Y, 11, { pin: true, amp: 0.7, n: 12, bow: 0.3, overshoot: 3 });
+  nodes.groundA = inkPath(groundD, introScene, { 'stroke-width': 2.1 });
+  nodes.groundB = inkPath(roughLine(860, GROUND_Y, 1420, GROUND_Y, 12, { pin: true, amp: 0.7, n: 10, bow: 0.2, overshoot: 2 }), introScene, { 'stroke-width': 2.1 });
+  nodes.groundEcho = inkPath(roughLine(150, GROUND_Y + 5, 900, GROUND_Y + 4.5, 13, { pin: true, amp: 0.5, n: 8, bow: 0.2 }), introScene, {
+    stroke: PALETTE.muted, 'stroke-width': 1, opacity: 0
+  });
+
+  let hatch = '';
+  const hr = mulberry32(21);
+  for (let x = 168; x < 1400; x += 13) {
+    const j = (hr() - 0.5) * 5;
+    const len = 7 + hr() * 9;
+    hatch += 'M ' + (x + j).toFixed(1) + ' ' + (GROUND_Y + 5).toFixed(1) + ' l -2.4 ' + len.toFixed(1) + ' ';
+  }
+  nodes.hatch = inkPath(hatch, introScene, { stroke: PALETTE.muted, 'stroke-width': 1, opacity: 0 });
+
+  nodes.pole = inkPath(roughLine(POLE_X, GROUND_Y, POLE_X + 1.2, 468, 31, { pin: true, amp: 0.8, n: 10, bow: 0.6, overshoot: 2 }), introScene, { 'stroke-width': 1.8 });
+  let ticks = '';
+  for (let i = 0; i <= 10; i++) {
+    const y = GROUND_Y - i * PIXELS_PER_METER;
+    const len = i % 5 === 0 ? 16 : 9;
+    const wob = ((i * 17) % 5) - 2;
+    ticks += 'M ' + POLE_X + ' ' + y + ' l ' + (len + wob * 0.3) + ' ' + (wob * 0.15) + ' ';
+  }
+  nodes.ticks = inkPath(ticks, introScene, { 'stroke-width': 1.35 });
+
+  const top = GROUND_Y - hPx[0];
+  const bracket = roughLine(262, top, 262, GROUND_Y, 41, { pin: true, amp: 0.7, n: 8, bow: 0.5 }) +
+    ' ' + roughLine(248, top, 276, top + 1, 42, { pin: true, amp: 0.4, n: 3, bow: 0 }) +
+    ' ' + roughLine(248, GROUND_Y, 276, GROUND_Y - 1, 43, { pin: true, amp: 0.4, n: 3, bow: 0 });
+  nodes.bracket = inkPath(bracket, introScene, { 'stroke-width': 1.5 });
+  nodes.level10 = inkPath(roughLine(POLE_X, top, DROP_X - BALL_R - 12, top + 0.4, 44, { pin: true, amp: 0.35, n: 4, bow: 0.2 }), introScene, {
+    'stroke-width': 1.2, 'stroke-dasharray': '1.4 6'
+  });
+
+  nodes.label10 = handText(introScene, heightLabels[0] + ' m', 236, 760, 28, {
+    math: true, anchor: 'end', exact: heightLabels[0] + ' m', safe: true
+  });
+
+  nodes.q1 = handText(introScene, 'Una pelota se deja caer desde 10 metros.', 158, 392, 26, { safe: true });
+  nodes.q1.setAttribute('transform', 'rotate(-0.35 158 392)');
+  nodes.q2 = handText(introScene, '', 158, 446, 22, { safe: true });
+  nodes.q2.setAttribute('data-exact', 'Cada rebote alcanza el 80% de la altura anterior.');
+  nodes.q2.setAttribute('transform', 'rotate(-0.25 158 446)');
+  const q2a = el('tspan', null, nodes.q2);
+  q2a.textContent = 'Cada rebote alcanza el ';
+  const q2b = el('tspan', null, nodes.q2);
+  q2b.textContent = '80%';
+  q2b.setAttribute('data-exact', '80%');
+  const q2c = el('tspan', null, nodes.q2);
+  q2c.textContent = ' de la altura anterior.';
+  nodes.q2pct = q2b;
+  nodes.q2line = inkPath('', introScene, { 'stroke-width': 1.4 });
+
+  nodes.stain = el('ellipse', {
+    cx: 250, cy: 280, rx: 70, ry: 28,
+    fill: '#E7DCC4', opacity: 0
+  }, introScene);
+}
+
+function createBounceDiagram() {
+  nodes.dropTrail = inkPath('M ' + DROP_X + ' ' + (GROUND_Y - hPx[0]) + ' L ' + DROP_X + ' ' + GROUND_Y, bounceScene, {
+    stroke: PALETTE.blue, 'stroke-width': 1.35, opacity: 0
+  });
+
+  nodes.arcs = bounces.map(function (b, i) {
+    const cpy = GROUND_Y - 2 * b.hPx;
+    const d = 'M ' + b.start.toFixed(2) + ' ' + GROUND_Y +
+      ' Q ' + b.apexX.toFixed(2) + ' ' + cpy.toFixed(2) + ' ' + b.end.toFixed(2) + ' ' + GROUND_Y;
+    const path = inkPath(d, bounceScene, { stroke: PALETTE.ink, 'stroke-width': 1.7 });
+    path._p0 = [b.start, GROUND_Y];
+    path._p1 = [b.apexX, cpy];
+    path._p2 = [b.end, GROUND_Y];
+    path._lut = buildLUT(path._p0, path._p1, path._p2);
+    path._bounce = b;
+    path._index = i;
+    return path;
+  });
+
+  nodes.guides = bounces.map(function (b, i) {
+    const guide = el('line', {
+      x1: POLE_X + 6,
+      y1: b.apexY,
+      x2: b.apexX - BALL_R - 4,
+      y2: b.apexY,
+      stroke: i === 4 ? PALETTE.green : PALETTE.muted,
+      'stroke-width': i === 4 ? 1.6 : 1.15,
+      'stroke-linecap': 'round',
+      'stroke-dasharray': '1.2 6',
+      opacity: 0
+    }, bounceScene);
+    return guide;
+  });
+  nodes.chevron = inkPath(arrowPath(POLE_X + 18, bounces[0].apexY - 16, POLE_X + 8, bounces[0].apexY - 2, 61), bounceScene, { 'stroke-width': 1.3 });
+
+  nodes.eq = mathText(bounceScene, 612, 528, 26, [
+    { s: '10 × ' },
+    { s: '0.8', fill: PALETTE.orange },
+    { s: ' = 8' }
+  ], '10 × 0.8 = 8', { safe: true });
+  nodes.eqUnderline = inkPath('', bounceScene, { stroke: PALETTE.orange, 'stroke-width': 1.6 });
+
+  nodes.standalone8 = handText(bounceScene, heightLabels[1] + ' m', 246, 568, 26, {
+    math: true, exact: heightLabels[1] + ' m', fill: PALETTE.blue, safe: true
+  });
+
+  nodes.reboteGroups = bounces.map(function (b) {
+    const g = el('g', { opacity: 1 }, bounceScene);
+    const title = handText(g, 'Rebote ' + b.n, b.apexX, b.apexY - 84, 15, {
+      anchor: 'middle', fill: PALETTE.muted, exact: 'Rebote ' + b.n
+    });
+    const value = handText(g, b.label, b.apexX, b.apexY - 60, 22, {
+      math: true, anchor: 'middle', fill: PALETTE.blue, exact: b.label, safe: true
+    });
+    return { g: g, title: title, value: value, b: b };
+  });
+  nodes.ordinal = handText(bounceScene, '5.º rebote', bounces[4].apexX, bounces[4].apexY - 112, 16, {
+    anchor: 'middle', fill: PALETTE.red, exact: '5.º rebote', safe: true
+  });
+
+  nodes.ghosts = [0, 1, 2, 3].map(function (i) {
+    const b = bounces[i];
+    return el('circle', {
+      cx: b.apexX,
+      cy: b.apexY - BALL_R,
+      r: BALL_R - 1,
+      fill: 'none',
+      stroke: PALETTE.muted,
+      'stroke-width': 1.2,
+      'stroke-dasharray': '2 3.5',
+      opacity: 0
+    }, bounceScene);
+  });
+  nodes.fifthRing = el('circle', {
+    cx: bounces[4].apexX,
+    cy: bounces[4].apexY - BALL_R,
+    r: BALL_R + 7,
+    fill: 'none',
+    stroke: PALETTE.green,
+    'stroke-width': 1.4,
+    'stroke-dasharray': '2 4',
+    opacity: 0
+  }, bounceScene);
+
+  /* Rolling morph of the fifth height: "3.2768 m" becomes "≈ 3.28 m". */
+  nodes.roll = el('g', { opacity: 0 }, bounceScene);
+  nodes.rollChars = {};
+  ['approx', 'a', 'digit7', 'digit8', 'tail', 'unit'].forEach(function (key) {
+    const t = el('text', {
+      y: 0,
+      fill: PALETTE.green,
+      'font-family': FONTS.math,
+      'font-size': 22,
+      'text-anchor': 'start',
+      opacity: key === 'digit8' || key === 'approx' ? 0 : 1
+    }, nodes.roll);
+    nodes.rollChars[key] = t;
+  });
+  nodes.rollChars.approx.textContent = '≈';
+  nodes.rollChars.a.textContent = '3.2';
+  nodes.rollChars.digit7.textContent = '7';
+  nodes.rollChars.digit8.textContent = '8';
+  nodes.rollChars.tail.textContent = '68';
+  nodes.rollChars.unit.textContent = 'm';
+  nodes.roll.setAttribute('data-exact', '≈ 3.28 m');
+
+  nodes.impactG = el('g', { opacity: 0 }, bounceScene);
+  nodes.impactLines = [];
+  const burst = mulberry32(77);
+  for (let i = 0; i < 4; i++) {
+    const ang = -Math.PI + 0.35 + i * 0.55 + burst() * 0.08;
+    const len = 12 + burst() * 8;
+    const d = roughLine(0, 0, Math.cos(ang) * len, Math.sin(ang) * len * 0.55 - 2, 80 + i, { pin: true, amp: 0.4, n: 3, bow: 0.2 });
+    nodes.impactLines.push(inkPath(d, nodes.impactG, { 'stroke-width': 1.4, opacity: 1 }));
+  }
+  nodes.dust = [];
+  for (let i = 0; i < 4; i++) {
+    nodes.dust.push(el('circle', {
+      r: 1.6 + (i % 2),
+      fill: PALETTE.muted,
+      opacity: 0
+    }, nodes.impactG));
+  }
+
+  nodes.releaseGhost = el('circle', {
+    cx: DROP_X,
+    cy: GROUND_Y - hPx[0] - BALL_R,
+    r: BALL_R,
+    fill: 'none',
+    stroke: PALETTE.blue,
+    'stroke-width': 1.15,
+    'stroke-dasharray': '1.5 4',
+    opacity: 0
+  }, bounceScene);
+}
+
+function createBall() {
+  nodes.shadowG = el('g', null, bounceScene);
+  nodes.shadow = el('ellipse', {
+    cx: 0, cy: 0, rx: 13, ry: 3.4,
+    fill: PALETTE.ink, opacity: 0.18
+  }, nodes.shadowG);
+
+  nodes.ballPos = el('g', null, bounceScene);
+  nodes.ballSquash = el('g', null, nodes.ballPos);
+  nodes.ballSpin = el('g', null, nodes.ballSquash);
+  nodes.ballFill = el('circle', {
+    cx: 0, cy: -BALL_R, r: BALL_R - 0.6,
+    fill: PALETTE.blue, opacity: 0
+  }, nodes.ballSpin);
+  nodes.ballOutline = inkPath(roughCircle(0, -BALL_R, BALL_R, 90), nodes.ballSpin, {
+    'stroke-width': 2, opacity: 0
+  });
+  nodes.ballSeam = inkPath('M -6 -' + (BALL_R - 2) + ' q 6 5 12 -1', nodes.ballSpin, {
+    stroke: '#214E68', 'stroke-width': 1.2, opacity: 0
+  });
+  nodes.ballHighlight = el('ellipse', {
+    cx: -5.5, cy: -BALL_R - 6, rx: 4.2, ry: 2.6,
+    fill: '#F7F3E8', opacity: 0,
+    transform: 'rotate(-28 -5.5 ' + (-BALL_R - 6) + ')'
+  }, nodes.ballSquash);
+  nodes.ballWrap = nodes.ballPos;
+}
+
+function createSequenceDiagram() {
+  const baseX = 1620;
+  const baselines = [468, 560, 652, 744, 836, 928];
+  nodes.seqNumbers = heights.map(function (h, i) {
+    const g = el('g', null, sequenceScene);
+    const t = handText(g, heightLabels[i], baseX, baselines[i], 34, {
+      math: true, anchor: 'end', exact: heightLabels[i], safe: true, fill: i === 0 ? PALETTE.ink : PALETTE.ink
+    });
+    return { g: g, t: t, baseX: baseX, y: baselines[i], n: i };
+  });
+  nodes.seqArrows = [];
+  nodes.seqMults = [];
+  for (let i = 0; i < 5; i++) {
+    const y1 = baselines[i] + 16;
+    const y2 = baselines[i + 1] - 28;
+    nodes.seqArrows.push(inkPath(arrowPath(1564, y1, 1564, y2, 100 + i), sequenceScene, {
+      stroke: PALETTE.orange, 'stroke-width': 1.45
+    }));
+    nodes.seqMults.push(handText(sequenceScene, '× 0.8', 1748, (y1 + y2) / 2 + 4, 16, {
+      math: true, fill: PALETTE.orange, exact: '× 0.8', anchor: 'start'
+    }));
+  }
+  nodes.seqTitle = handText(sequenceScene, 'Sucesión geométrica', 1660, 1012, 28, {
+    anchor: 'middle', exact: 'Sucesión geométrica', safe: true
+  });
+  nodes.seqTitle.setAttribute('transform', 'rotate(-0.3 1660 1012)');
+  nodes.seqUnderline = inkPath('', sequenceScene, { 'stroke-width': 1.5 });
+  nodes.seqReason = mathText(sequenceScene, 1660, 1062, 24, [
+    { s: 'Razón: ' },
+    { s: 'r', italic: true, fill: PALETTE.orange },
+    { s: ' = ' },
+    { s: '0.8', fill: PALETTE.orange }
+  ], 'Razón: r = 0.8', { anchor: 'middle', safe: true });
+  nodes.seqLink = inkPath('', sequenceScene, { stroke: PALETTE.muted, 'stroke-width': 1.15, opacity: 0 });
+}
+
+function createFormulaScene() {
+  const exactGeneral = 'hₙ = h₀ · rⁿ';
+  nodes.general = mathText(formulaScene, 470, 1572, 46, [
+    { s: 'h', italic: true },
+    { s: 'n', italic: true, sub: true },
+    { s: ' = ' },
+    { s: 'h', italic: true },
+    { s: '0', sub: true },
+    { s: ' · ' },
+    { s: 'r', italic: true },
+    { s: 'n', italic: true, sup: true }
+  ], exactGeneral, { safe: true });
+
+  nodes.annos = [
+    handText(formulaScene, '10', 500, 1688, 22, { math: true, fill: PALETTE.blue, exact: '10', anchor: 'middle' }),
+    handText(formulaScene, '0.8', 620, 1688, 22, { math: true, fill: PALETTE.orange, exact: '0.8', anchor: 'middle' }),
+    handText(formulaScene, '5', 740, 1688, 22, { math: true, fill: PALETTE.red, exact: '5', anchor: 'middle' })
+  ];
+  nodes.annoArrows = [0, 1, 2].map(function (i) {
+    return inkPath('', formulaScene, { 'stroke-width': 1.3, stroke: i === 1 ? PALETTE.orange : i === 2 ? PALETTE.red : PALETTE.blue });
+  });
+
+  const exactSub = 'h₅ = 10(0.8)⁵';
+  nodes.substituted = mathText(formulaScene, 1040, 1572, 42, [
+    { s: 'h', italic: true },
+    { s: '5', sub: true },
+    { s: ' = 10(0.8)' },
+    { s: '5', sup: true }
+  ], exactSub, { safe: true });
+  nodes.transformArrow = inkPath('', formulaScene, { 'stroke-width': 1.4 });
+
+  nodes.powLine = mathText(formulaScene, 1040, 1684, 32, [
+    { s: '(0.8)' },
+    { s: '5', sup: true },
+    { s: ' = ' + formatNumber(Math.pow(ratio, 5)) }
+  ], '(0.8)⁵ = ' + formatNumber(Math.pow(ratio, 5)), { safe: true });
+
+  nodes.prodLine = mathText(formulaScene, 1040, 1764, 32, [
+    { s: 'h', italic: true },
+    { s: '5', sub: true },
+    { s: ' = 10 × ' + formatNumber(Math.pow(ratio, 5)) }
+  ], 'h₅ = 10 × ' + formatNumber(Math.pow(ratio, 5)), { safe: true });
+
+  nodes.resultLine = mathText(formulaScene, 1040, 1860, 36, [
+    { s: 'h', italic: true, fill: PALETTE.green },
+    { s: '5', sub: true, fill: PALETTE.green },
+    { s: ' = ' + heightLabels[5] + ' m', fill: PALETTE.green }
+  ], 'h₅ = ' + heightLabels[5] + ' m', { safe: true });
+  nodes.resultBox = inkPath('', formulaScene, { stroke: PALETTE.green, 'stroke-width': 1.6 });
+}
+
+function createFinalScene() {
+  nodes.finalTitle = handText(finalScene, 'El quinto rebote alcanza', 1020, 1204, 54, {
+    anchor: 'middle', exact: 'El quinto rebote alcanza', safe: true
+  });
+  nodes.finalAnswer = handText(finalScene, '≈ 3.28 m', 1020, 1368, 118, {
+    math: true, anchor: 'middle', fill: PALETTE.green, exact: '≈ 3.28 m', safe: true
+  });
+  nodes.finalSub = handText(finalScene, '', 1020, 1476, 36, {
+    anchor: 'middle', exact: 'Cada altura es el 80% de la anterior.', safe: true
+  });
+  const s1 = el('tspan', null, nodes.finalSub);
+  s1.textContent = 'Cada altura es el ';
+  const s2 = el('tspan', { fill: PALETTE.orange }, nodes.finalSub);
+  s2.textContent = '80%';
+  s2.setAttribute('data-exact', '80%');
+  const s3 = el('tspan', null, nodes.finalSub);
+  s3.textContent = ' de la anterior.';
+  nodes.finalUnderline = inkPath('', finalScene, { stroke: PALETTE.green, 'stroke-width': 3.2, opacity: 0 });
+  nodes.toAnswer = inkPath('', finalScene, { stroke: PALETTE.green, 'stroke-width': 1.35, opacity: 0 });
+  nodes.toFormula = inkPath('', finalScene, { stroke: PALETTE.muted, 'stroke-width': 1.15, opacity: 0 });
+  nodes.doodles = [0, 1, 2].map(function (i) {
+    const cx = [210, 1760, 1500][i];
+    const cy = [250, 360, 1920][i];
+    const rng = mulberry32(200 + i);
+    let d = '';
+    let a0 = rng() * 3;
+    for (let k = 0; k < 18; k++) {
+      const a = a0 + k * 0.55;
+      const rr = 4 + k * 1.15;
+      const x = cx + Math.cos(a) * rr;
+      const y = cy + Math.sin(a) * rr * 0.72;
+      d += (k === 0 ? 'M ' : ' L ') + x.toFixed(1) + ' ' + y.toFixed(1);
+    }
+    return inkPath(d, finalScene, { stroke: PALETTE.muted, 'stroke-width': 1.15 });
+  });
+}
+
+function createOverlay() {
+  el('rect', { x: 0, y: 0, width: 720, height: 720, fill: 'url(#vig)' }, overlay);
+  el('rect', { x: 0, y: 0, width: 28, height: 720, fill: 'url(#fadeL)' }, overlay);
+  el('rect', { x: 692, y: 0, width: 28, height: 720, fill: 'url(#fadeR)' }, overlay);
+  el('rect', { x: 0, y: 0, width: 720, height: 28, fill: 'url(#fadeT)' }, overlay);
+  el('rect', { x: 0, y: 692, width: 720, height: 28, fill: 'url(#fadeB)' }, overlay);
+
+  nodes.replay = el('g', {
+    id: 'replay',
+    opacity: 0,
+    tabindex: '-1',
+    role: 'button',
+    'aria-label': 'Repetir animación',
+    transform: 'translate(588 652)'
+  }, overlay);
+  nodes.replay.style.cursor = 'pointer';
+  const arrow = roughLine(18, 8, 18, 8, 9, { n: 2 });
+  const ring = roughCircle(18, 16, 15, 301);
+  nodes.replayRing = inkPath(ring + ' M 18 6 L 23 11 L 14 12', nodes.replay, { 'stroke-width': 1.5, opacity: 1 });
+  forceAttr(nodes.replayRing, 'opacity', 1);
+  nodes.replayLabel = handText(nodes.replay, 'Repetir', 40, 22, 16, { exact: 'Repetir' });
+  forceAttr(nodes.replayLabel, 'opacity', 1);
+  nodes.hint = handText(overlay, 'R repetir · M sonido', 360, 700, 13, {
+    anchor: 'middle', fill: PALETTE.muted, exact: 'R repetir · M sonido'
+  });
+}
+
+function layoutTexts() {
+  fitTextToWidth(nodes.q1, 620, 18);
+  fitTextToWidth(nodes.q2, 640, 16);
+  fitTextToWidth(nodes.finalTitle, 980, 40);
+  fitTextToWidth(nodes.finalAnswer, 860, 72);
+  fitTextToWidth(nodes.finalSub, 1080, 24);
+  fitTextToWidth(nodes.seqTitle, 420, 20);
+  fitTextToWidth(nodes.general, 520, 32);
+  fitTextToWidth(nodes.substituted, 500, 28);
+  fitTextToWidth(nodes.powLine, 520, 22);
+  fitTextToWidth(nodes.prodLine, 560, 22);
+  fitTextToWidth(nodes.resultLine, 560, 24);
+
+  const prefix = 'Cada rebote alcanza el ';
+  const start = nodes.q2.getStartPositionOfChar(prefix.length);
+  const end = nodes.q2.getEndPositionOfChar(prefix.length + 2);
+  nodes.q2line.setAttribute('d', roughLine(start.x, start.y + 5, end.x, end.y + 5, 51, { pin: true, amp: 0.35, n: 3, bow: 0.2 }));
+
+  const eqStart = nodes.eq.getStartPositionOfChar(5);
+  const eqEnd = nodes.eq.getEndPositionOfChar(7);
+  nodes.eqUnderline.setAttribute('d', roughLine(eqStart.x, eqStart.y + 5, eqEnd.x + 1, eqEnd.y + 5, 52, { pin: true, amp: 0.3, n: 3, bow: 0 }));
+
+  const titleBox = nodes.seqTitle.getBBox();
+  nodes.seqUnderline.setAttribute('d', roughLine(titleBox.x, titleBox.y + titleBox.height + 2, titleBox.x + titleBox.width, titleBox.y + titleBox.height + 3, 53, { pin: true, amp: 0.4, n: 4, bow: 0.3 }));
+
+  /* Point the three annotations at h₀, r and the exponent. */
+  const h0 = nodes.general.getStartPositionOfChar(5);
+  const rChar = nodes.general.getStartPositionOfChar(10);
+  const nChar = nodes.general.getStartPositionOfChar(11);
+  const targets = [h0, rChar, nChar];
+  const span = targets[2].x - targets[0].x;
+  const spread = Math.max(150, span + 70);
+  const mid = (targets[0].x + targets[2].x) / 2;
+  nodes.annos.forEach(function (anno, i) {
+    const ax = mid + (i - 1) * (spread / 2);
+    forceAttr(anno, 'x', ax);
+    forceAttr(anno, 'y', 1710);
+    nodes.annoArrows[i].setAttribute('d', arrowPath(ax, 1684, targets[i].x + 3, targets[i].y + 18, 120 + i));
+  });
+
+  const subBox = nodes.substituted.getBBox();
+  nodes.transformArrow.setAttribute('d', arrowPath(760, 1564, subBox.x - 16, 1566, 130));
+
+  const res = nodes.resultLine.getBBox();
+  const pad = 12;
+  const x = res.x - pad;
+  const y = res.y - pad;
+  const w = res.width + pad * 2;
+  const h = res.height + pad * 2;
+  nodes.resultBox.setAttribute('d',
+    roughLine(x, y, x + w, y + 1, 140, { pin: true, amp: 0.6, n: 4, bow: 0.4 }) + ' ' +
+    roughLine(x + w, y, x + w + 1, y + h, 141, { pin: true, amp: 0.6, n: 3, bow: 0.3 }) + ' ' +
+    roughLine(x + w, y + h, x, y + h + 1, 142, { pin: true, amp: 0.6, n: 4, bow: 0.4 }) + ' ' +
+    roughLine(x, y + h, x - 1, y, 143, { pin: true, amp: 0.6, n: 3, bow: 0.3 })
+  );
+
+  const ans = nodes.finalAnswer.getBBox();
+  nodes.finalUnderline.setAttribute('d', roughLine(ans.x + 8, ans.y + ans.height - 6, ans.x + ans.width - 6, ans.y + ans.height - 4, 150, {
+    pin: true, amp: 0.8, n: 5, bow: 1.2
+  }));
+
+  const title = nodes.finalTitle.getBBox();
+  const ansBox = nodes.finalAnswer.getBBox();
+  const lane = Math.max(title.x + title.width, ansBox.x + ansBox.width) + 28;
+  const ansMidY = ansBox.y + ansBox.height * 0.55;
+  nodes.toAnswer.setAttribute('d',
+    roughLine(bounces[4].apexX + 20, bounces[4].apexY - 6, lane, 960, 151, { pin: true, amp: 1.1, n: 5, bow: 4 }) + ' ' +
+    roughLine(lane, 960, lane, ansMidY, 152, { pin: true, amp: 0.8, n: 4, bow: 2 }) + ' ' +
+    arrowPath(lane, ansMidY, ansBox.x + ansBox.width + 14, ansMidY, 156));
+
+  nodes.toFormula.setAttribute('d', roughLine(1688, 940, 1760, 1680, 153, { amp: 1.1, n: 8, bow: 6 }) +
+    ' ' + roughLine(1760, 1680, 1580, 1852, 154, { pin: true, amp: 0.7, n: 4, bow: 1 }));
+
+  nodes.seqLink.setAttribute('d', roughLine(bounces[4].apexX + 24, bounces[4].apexY - 20, 1500, 700, 155, { amp: 1.2, n: 6, bow: 10 }));
+
+  /* Decimal-align the sequence on the measured dot of 6.4. */
+  const sample = nodes.seqNumbers[2].t;
+  const dot = sample.getStartPositionOfChar(String(heightLabels[2]).indexOf('.'));
+  const decimalX = 1620;
+  const shift = decimalX - dot.x;
+  nodes.seqNumbers.forEach(function (item, i) {
+    const label = heightLabels[i];
+    const dotIndex = label.indexOf('.');
+    if (dotIndex === -1) {
+      const w = item.t.getComputedTextLength();
+      forceAttr(item.t, 'x', decimalX);
+      forceAttr(item.t, 'text-anchor', 'end');
+    } else {
+      const integer = label.slice(0, dotIndex);
+      item.t.textContent = '';
+      const a = el('tspan', { 'text-anchor': 'end', x: decimalX }, item.t);
+      a.textContent = integer;
+      const b = el('tspan', { 'text-anchor': 'start', x: decimalX }, item.t);
+      b.textContent = label.slice(dotIndex);
+      forceAttr(item.t, 'text-anchor', 'start');
+    }
+    item.decimalX = decimalX;
+  });
+
+  layoutRollMetrics();
+
+  nodes.arcs.forEach(function (path) {
+    const svgLen = path.getTotalLength();
+    const lutTotal = path._lut[path._lut.length - 1] || 1;
+    path._svgLen = svgLen;
+    path._lutTotal = lutTotal;
+  });
+  nodes.dropTrail._svgLen = nodes.dropTrail.getTotalLength();
+}
+
+function layoutRollMetrics() {
+  const probe = nodes.rollChars.a;
+  function widthOf(textEl) {
+    return textEl.getComputedTextLength();
+  }
+  nodes.rollW = {
+    approx: widthOf(nodes.rollChars.approx),
+    space: widthOf(nodes.rollChars.unit) * 0.45,
+    a: widthOf(nodes.rollChars.a),
+    digit: widthOf(nodes.rollChars.digit7),
+    tail: widthOf(nodes.rollChars.tail),
+    unit: widthOf(nodes.rollChars.unit),
+    line: 26
+  };
+}
+
+/* =========================================================
+   5. TIMELINE ENGINE
+   Tracks apply absolute states. A finished track writes once
+   more at its end, then later tracks may take over the attribute.
+   ========================================================= */
+function timeline() {
+  const tracks = [];
+  const cues = [];
+  return {
+    add: function (start, duration, apply, ease) {
+      tracks.push({
+        start: start,
+        duration: Math.max(0.0001, duration),
+        apply: apply,
+        ease: ease || linear,
+        last: -1,
+        done: false
+      });
+      return tracks[tracks.length - 1];
+    },
+    cue: function (time, fn) {
+      cues.push({ time: time, fn: fn, fired: false });
+    },
+    reset: function () {
+      tracks.forEach(function (tr) { tr.last = -1; tr.done = false; });
+      cues.forEach(function (c) { c.fired = false; });
+    },
+    update: function (t) {
+      const ordered = tracks.slice().sort(function (a, b) { return a.start - b.start; });
+      for (let i = 0; i < ordered.length; i++) {
+        const tr = ordered[i];
+        if (t + 1e-6 < tr.start) continue;
+        const raw = Math.min(1, (t - tr.start) / tr.duration);
+        if (tr.done && raw >= 1) continue;
+        tr.apply(tr.ease(raw), raw, t);
+        tr.last = raw;
+        if (raw >= 1) tr.done = true;
+      }
+      const orderedCues = cues.slice().sort(function (a, b) { return a.time - b.time; });
+      for (let i = 0; i < orderedCues.length; i++) {
+        const c = orderedCues[i];
+        if (!c.fired && t + 1e-6 >= c.time) {
+          c.fired = true;
+          c.fn();
+        }
+      }
+    },
+    duration: DURATION
+  };
+}
+
+const tl = timeline();
+let allowSound = true;
+
+/* =========================================================
+   6. ANIMATION HELPERS
+   ========================================================= */
+const cam = { x: 420, y: 930, zoom: 1.45, rot: 0 };
+const camHome = { x: 420, y: 930, zoom: 1.45, rot: 0 };
+const bumps = [];
+function addBump(t0) {
+  if (!reduced) bumps.push(t0);
+}
+
+function animateCamera(start, dur, to, opts) {
+  const o = opts || {};
+  const local = { from: null };
+  remember(function () { local.from = null; });
+  const easeFn = o.ease || cameraEase;
+  tl.add(start, dur, function (e) {
+    if (!local.from) {
+      local.from = { x: cam.x, y: cam.y, zoom: cam.zoom, rot: cam.rot };
+    }
+    if (e >= 1) {
+      cam.x = to.x;
+      cam.y = to.y;
+      cam.zoom = to.zoom;
+      cam.rot = to.rot || 0;
+      return;
+    }
+    const u = easeFn(e);
+    const dip = o.zoomDip ? Math.sin(Math.PI * clamp01(e)) * o.zoomDip : 0;
+    cam.x = local.from.x + (to.x - local.from.x) * u;
+    cam.y = local.from.y + (to.y - local.from.y) * u;
+    cam.rot = (local.from.rot + ((to.rot || 0) - local.from.rot) * u);
+    const z = Math.exp(Math.log(local.from.zoom) + (Math.log(to.zoom) - Math.log(local.from.zoom)) * u);
+    cam.zoom = z / (1 + dip);
+  }, linear);
+}
+
+function renderCamera(t) {
+  let z = cam.zoom;
+  if (!reduced && (t < 68.45 || t >= 70.6)) {
+    z *= 1 + 0.008 * Math.sin(t * 0.32);
+  }
+  let by = 0;
+  if (!reduced) {
+    for (let i = 0; i < bumps.length; i++) {
+      const dt = t - bumps[i];
+      if (dt < 0 || dt > 0.24) continue;
+      by += 1.6 * Math.sin((Math.PI * dt) / 0.24);
+    }
+  }
+  const rot = reduced ? 0 : cam.rot;
+  setAttr(cameraG, 'transform',
+    'translate(' + (360 + 0).toFixed(2) + ' ' + (360 + by).toFixed(2) + ') rotate(' + rot.toFixed(3) + ') scale(' + z.toFixed(4) + ') translate(' + (-cam.x).toFixed(2) + ' ' + (-cam.y).toFixed(2) + ')');
+}
+
+function animatePathDrawing(path, start, dur, seed, targetOpacity) {
+  const len = (path.getTotalLength() || 0) + 1;
+  const ease = variedDrawEase(seed || 1);
+  const op = targetOpacity == null ? 1 : targetOpacity;
+  forceAttr(path, 'stroke-dasharray', len);
+  forceAttr(path, 'stroke-dashoffset', len);
+  forceAttr(path, 'opacity', 0);
+  remember(function () {
+    forceAttr(path, 'stroke-dasharray', len);
+    forceAttr(path, 'stroke-dashoffset', len);
+    forceAttr(path, 'opacity', 0);
+  });
+  tl.add(start, dur, function (e) {
+    const shown = ease(e);
+    if (e >= 1) {
+      forceAttr(path, 'stroke-dashoffset', 0);
+      forceAttr(path, 'stroke-dasharray', 'none');
+      forceAttr(path, 'opacity', op);
+    } else {
+      forceAttr(path, 'stroke-dasharray', len);
+      forceAttr(path, 'stroke-dashoffset', len * (1 - shown));
+      forceAttr(path, 'opacity', op);
+    }
+  }, linear);
+}
+
+function clipWipe(node, start, dur) {
+  const bb = node.getBBox();
+  const id = 'cw' + (++uid);
+  const cp = el('clipPath', { id: id, clipPathUnits: 'userSpaceOnUse' }, defs);
+  const rect = el('rect', {
+    x: bb.x - 8,
+    y: bb.y - 10,
+    width: 0,
+    height: bb.height + 24
+  }, cp);
+  remember(function () {
+    forceAttr(rect, 'width', 0);
+    node.setAttribute('clip-path', 'url(#' + id + ')');
+  });
+  node.setAttribute('clip-path', 'url(#' + id + ')');
+  tl.add(start, dur, function (e) {
+    const u = easeInOutCubic(e);
+    forceAttr(rect, 'width', (bb.width + 20) * u);
+    if (e >= 1) node.removeAttribute('clip-path');
+  }, linear);
+}
+
+function animateTextReveal(node, start, dur, targetOpacity) {
+  const op = targetOpacity == null ? 1 : targetOpacity;
+  forceAttr(node, 'opacity', 0);
+  remember(function () { forceAttr(node, 'opacity', 0); });
+  const len = Math.max(8, (node.textContent || '').length);
+  const duration = dur || Math.max(0.5, Math.min(1.8, len * 0.035));
+  clipWipe(node, start, duration);
+  tl.add(start, duration, function (e) {
+    const fade = Math.min(1, e * 2.4);
+    forceAttr(node, 'opacity', op * fade);
+    if (e >= 1) forceAttr(node, 'opacity', op);
+  }, linear);
+  return duration;
+}
+
+function animateOpacity(node, start, dur, from, to, ease) {
+  tl.add(start, dur, function (e) {
+    const u = (ease || easeInOutCubic)(e);
+    forceAttr(node, 'opacity', from + (to - from) * (e >= 1 ? 1 : u));
+  }, linear);
+}
+
+function animateEmphasis(node, start) {
+  let box = null;
+  remember(function () {
+    box = null;
+    node.removeAttribute('transform');
+    if (node._a) delete node._a.transform;
+  });
+  tl.add(start, 0.48, function (e) {
+    if (!box) box = node.getBBox();
+    const k = easeOutBack(clamp01(e), 1.15);
+    const s = 1.12 - 0.12 * k;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    if (e >= 1) {
+      node.removeAttribute('transform');
+      if (node._a) delete node._a.transform;
+      return;
+    }
+    setAttr(node, 'transform', 'translate(' + cx.toFixed(2) + ' ' + cy.toFixed(2) + ') scale(' + s.toFixed(4) + ') translate(' + (-cx).toFixed(2) + ' ' + (-cy).toFixed(2) + ')');
+  }, linear);
+}
+
+function animateWobble(node, cx, cy, start, amp) {
+  if (reduced) return;
+  remember(function () {
+    node.removeAttribute('transform');
+    if (node._a) delete node._a.transform;
+  });
+  tl.add(start, 0.46, function (e) {
+    const ang = Math.sin(e * Math.PI * 2.4) * amp * (1 - e);
+    if (e >= 1) {
+      node.removeAttribute('transform');
+      if (node._a) delete node._a.transform;
+      return;
+    }
+    setAttr(node, 'transform', 'rotate(' + ang.toFixed(3) + ' ' + cx + ' ' + cy + ')');
+  }, linear);
+}
+
+function poseAt(t) {
+  const restY = GROUND_Y - hPx[0];
+  if (t < 10) return { x: DROP_X, y: restY, u: 0, n: 0, sp: 0, phase: 'rest' };
+  if (t < motion.drop.t0) {
+    const p = (t - 10) / (motion.drop.t0 - 10);
+    return { x: DROP_X, y: restY - Math.sin(Math.PI * p) * 11, u: 0, n: 0, sp: 0, phase: 'antic' };
+  }
+  if (t < motion.drop.t1) {
+    const p = (t - motion.drop.t0) / (motion.drop.t1 - motion.drop.t0);
+    const u = easeInQuad(p);
+    return { x: DROP_X, y: restY + hPx[0] * u, u: u, n: 0, sp: Math.min(1, p * 2), phase: 'drop' };
+  }
+  for (let i = 0; i < motion.impacts.length; i++) {
+    const w = motion.impacts[i];
+    if (t >= w.t0 && t < w.t0 + 0.1) {
+      return { x: w.x, y: GROUND_Y, u: 1, n: i, sp: 0, phase: 'hit', hitP: (t - w.t0) / 0.1, hPrev: w.hPrev };
+    }
+  }
+  for (let i = 0; i < motion.segments.length; i++) {
+    const seg = motion.segments[i];
+    if (t >= seg.t0 && t < seg.t1) {
+      const a = (t - seg.t0) / (seg.t1 - seg.t0);
+      let u = 0.5;
+      let sp = 0;
+      if (seg.kind === 'up') {
+        u = timeWarpUp(a, seg.k);
+        sp = Math.min(1, Math.abs(0.5 * (1 + seg.k * Math.cos(Math.PI * a))));
+      } else if (seg.kind === 'down') {
+        u = timeWarpDown(a, seg.k);
+        sp = Math.min(1, Math.abs(0.5 * (1 - seg.k * Math.cos(Math.PI * a))));
+      }
+      const b = bounces[seg.n - 1];
+      return {
+        x: b.start + b.w * u,
+        y: GROUND_Y - 4 * b.hPx * u * (1 - u),
+        u: u,
+        n: seg.n,
+        sp: sp,
+        phase: seg.kind,
+        seg: seg
+      };
+    }
+  }
+  const last = bounces[4];
+  return { x: last.apexX, y: last.apexY, u: 0.5, n: 5, sp: 0, phase: 'hold' };
+}
+
+function squashFor(pose, t) {
+  if (pose.phase === 'hit') {
+    const amount = 0.1 + 0.03 * Math.sqrt(pose.hPrev / initialHeight);
+    const p = pose.hitP;
+    let sy;
+    if (p < 0.4) sy = 1 - amount * easeOutQuad(p / 0.4);
+    else sy = 1 - amount * (1 - easeInQuad((p - 0.4) / 0.6));
+    const sx = 1 + 0.6 * (1 - sy);
+    return { sx: sx, sy: sy };
+  }
+  for (let i = 0; i < motion.impacts.length; i++) {
+    const dt = t - (motion.impacts[i].t0 + 0.1);
+    if (dt >= 0 && dt < 0.18) {
+      const p = dt / 0.18;
+      const sy = 1 + 0.04 * Math.sin(Math.PI * p) * (1 - p);
+      return { sx: 1 - (sy - 1) * 0.45, sy: sy };
+    }
+  }
+  if (pose.phase === 'drop' || pose.phase === 'up' || pose.phase === 'down') {
+    const sy = 1 + 0.035 * pose.sp;
+    return { sx: 1 / Math.sqrt(sy), sy: sy };
+  }
+  return { sx: 1, sy: 1 };
+}
+
+function animateBallBounce(t) {
+  const pose = poseAt(t);
+  const sc = squashFor(pose, t);
+  setAttr(nodes.ballPos, 'transform', 'translate(' + pose.x.toFixed(2) + ' ' + pose.y.toFixed(2) + ')');
+  setAttr(nodes.ballSquash, 'transform', 'scale(' + sc.sx.toFixed(3) + ' ' + sc.sy.toFixed(3) + ')');
+  if (!reduced) {
+    const spin = (pose.x - DROP_X) * 0.22 + Math.max(0, pose.y - (GROUND_Y - hPx[0])) * 0.04;
+    setAttr(nodes.ballSpin, 'transform', 'rotate(' + spin.toFixed(2) + ' 0 ' + (-BALL_R) + ')');
+  }
+  const height = Math.max(0, GROUND_Y - pose.y);
+  const closeness = Math.max(0.2, 1 - height / 540);
+  setAttr(nodes.shadowG, 'transform', 'translate(' + pose.x.toFixed(2) + ' ' + (GROUND_Y + 5) + ') scale(' + (0.45 + closeness).toFixed(3) + ' 1)');
+  setAttr(nodes.shadow, 'opacity', (0.16 * closeness).toFixed(3));
+
+  if (t >= motion.drop.t0 && t <= motion.drop.t1) {
+    const u = easeInQuad((t - motion.drop.t0) / (motion.drop.t1 - motion.drop.t0));
+    const len = nodes.dropTrail._svgLen || 1;
+    forceAttr(nodes.dropTrail, 'opacity', 0.85);
+    forceAttr(nodes.dropTrail, 'stroke-dasharray', len);
+    forceAttr(nodes.dropTrail, 'stroke-dashoffset', len * (1 - u));
+  } else if (t > motion.drop.t1) {
+    forceAttr(nodes.dropTrail, 'opacity', 0.45);
+    forceAttr(nodes.dropTrail, 'stroke-dasharray', 'none');
+    forceAttr(nodes.dropTrail, 'stroke-dashoffset', 0);
+  } else {
+    forceAttr(nodes.dropTrail, 'opacity', 0);
+  }
+
+  nodes.arcs.forEach(function (path, index) {
+    const n = index + 1;
+    const b = bounces[index];
+    let u = 0;
+    if (pose.n === n && (pose.phase === 'up' || pose.phase === 'down' || pose.phase === 'hold')) u = pose.u;
+    else if (n === 1 && t >= motion.apexAt[1] && t < 18.6) u = 0.5;
+    else if (n < 5 && motion.apexAt[n] && t >= b.endTime) u = 1;
+    else if (t >= (motion.segments.filter(function (s) { return s.n === n && s.kind === 'down'; }).map(function (s) { return s.t1; })[0] || 1e9)) u = 1;
+    if (n === 5 && t >= motion.apexAt[5]) u = 0.5;
+    const downEnd = motion.segments.filter(function (s) { return s.n === n && s.kind === 'down'; })[0];
+    if (downEnd && t >= downEnd.t1) u = 1;
+    const upSeg = motion.segments.filter(function (s) { return s.n === n && s.kind === 'up'; })[0];
+    if (upSeg && t < upSeg.t0) u = 0;
+    if (u <= 0) {
+      forceAttr(path, 'opacity', 0);
+      return;
+    }
+    const len = path._svgLen || path.getTotalLength() || 1;
+    const frac = lutAt(path._lut, u) / (path._lutTotal || 1);
+    if (u >= 0.999) {
+      forceAttr(path, 'stroke-dasharray', 'none');
+      forceAttr(path, 'stroke-dashoffset', 0);
+    } else {
+      forceAttr(path, 'stroke-dasharray', len);
+      forceAttr(path, 'stroke-dashoffset', len * (1 - frac));
+    }
+    if (path._opacityLock == null) forceAttr(path, 'opacity', 1);
+  });
+
+  let impact = null;
+  for (let i = 0; i < motion.impacts.length; i++) {
+    const dt = t - motion.impacts[i].t0;
+    if (dt >= 0 && dt < 0.42) impact = { w: motion.impacts[i], dt: dt };
+  }
+  if (!impact) {
+    forceAttr(nodes.impactG, 'opacity', 0);
+  } else {
+    setAttr(nodes.impactG, 'transform', 'translate(' + impact.w.x.toFixed(2) + ' ' + GROUND_Y + ')');
+    const show = impact.dt < 0.16 ? impact.dt / 0.16 : 1;
+    const fade = impact.dt < 0.2 ? 1 : 1 - (impact.dt - 0.2) / 0.22;
+    forceAttr(nodes.impactG, 'opacity', Math.max(0, fade));
+    nodes.impactLines.forEach(function (line) {
+      const len = line._len || (line._len = line.getTotalLength() + 1);
+      forceAttr(line, 'opacity', 1);
+      forceAttr(line, 'stroke-dasharray', len);
+      forceAttr(line, 'stroke-dashoffset', len * (1 - easeOutQuad(Math.min(1, show))));
+    });
+    nodes.dust.forEach(function (dot, i) {
+      const dir = i < 2 ? -1 : 1;
+      const dist = impact.dt * (18 + i * 6);
+      forceAttr(dot, 'cx', dir * dist);
+      forceAttr(dot, 'cy', -impact.dt * (8 + i * 3));
+      forceAttr(dot, 'opacity', Math.max(0, 0.55 - impact.dt));
+    });
+  }
+}
+
+/* Arc opacity is also driven by timeline tracks. The motion pass
+   skips opacity when a lock is set by those tracks. */
+function lockArcOpacity(index, start) {
+  tl.cue(start, function () { nodes.arcs[index]._opacityLock = true; });
+  remember(function () { nodes.arcs[index]._opacityLock = null; });
+}
+
+/* =========================================================
+   7. CHOREOGRAPHY
+   ========================================================= */
+function buildChoreography() {
+  const apex = motion.apexAt;
+
+  /* ---------- SCENE 1 — THE QUESTION (0–10s) ---------- */
+  animatePathDrawing(nodes.margin, 0.2, 1.6, 3, 0.14);
+  animatePathDrawing(nodes.groundA, 0.35, 1.55, 11, 1);
+  animatePathDrawing(nodes.groundEcho, 1.5, 0.8, 13, 0.45);
+  animatePathDrawing(nodes.hatch, 1.15, 1.1, 21, 0.55);
+  animateWobble(nodes.groundA, 500, GROUND_Y, 1.9, 0.12);
+
+  animateCamera(1.8, 2.0, { x: 390, y: 610, zoom: 1.28, rot: -0.15 });
+  animatePathDrawing(nodes.pole, 1.85, 1.7, 31, 1);
+  animatePathDrawing(nodes.ticks, 2.5, 1.15, 32, 1);
+  animateWobble(nodes.pole, POLE_X, 740, 3.6, 0.22);
+
+  tl.add(4.0, 0.55, function (e) {
+    const u = easeOutBack(clamp01(e), 1.1);
+    forceAttr(nodes.ballFill, 'opacity', Math.min(1, e * 1.4));
+    forceAttr(nodes.ballHighlight, 'opacity', 0.95 * Math.min(1, e * 1.4));
+    forceAttr(nodes.ballSeam, 'opacity', 0.4 * Math.min(1, e * 1.2));
+    const s = 0.2 + 0.8 * Math.min(1.08, u);
+    if (e >= 1) {
+      forceAttr(nodes.ballFill, 'opacity', 1);
+      forceAttr(nodes.ballHighlight, 'opacity', 0.95);
+      forceAttr(nodes.ballSeam, 'opacity', 0.4);
+    }
+  }, linear);
+  animatePathDrawing(nodes.ballOutline, 4.0, 0.6, 90, 1);
+
+  animateCamera(4.55, 1.25, { x: 470, y: 690, zoom: 0.95, rot: 0 });
+  animatePathDrawing(nodes.bracket, 4.7, 1.05, 41, 1);
+  clipWipe(nodes.level10, 5.15, 0.7);
+  animateOpacity(nodes.level10, 5.15, 0.4, 0, 0.8);
+  animateTextReveal(nodes.label10, 5.75, 0.7);
+  animateEmphasis(nodes.label10, 5.85);
+  animateWobble(nodes.bracket, 262, 750, 5.8, 0.28);
+
+  animateOpacity(nodes.stain, 0.4, 1.2, 0, 0.18);
+
+  animateTextReveal(nodes.q1, 6.55, 1.5);
+  animateTextReveal(nodes.q2, 8.15, 1.6);
+  animatePathDrawing(nodes.q2line, 9.45, 0.45, 51, 0.9);
+
+  /* ---------- SCENE 2 — FIRST BOUNCE (10–18s) ---------- */
+  animateOpacity(nodes.q1, 10.05, 0.4, 1, 0.62);
+  animateOpacity(nodes.q2, 10.05, 0.4, 1, 0.62);
+  animateOpacity(nodes.releaseGhost, 10.3, 0.35, 0, 0.3);
+  animateCamera(10.35, motion.drop.t1 - 10.35, { x: 470, y: 760, zoom: 1.02, rot: 0.1 });
+  tl.cue(motion.drop.t1, function () { if (allowSound) sound.bounce(1); addBump(motion.drop.t1); });
+
+  animateCamera(motion.drop.t1 + 0.12, apex[1] - motion.drop.t1 - 0.05, { x: 500, y: 690, zoom: 0.95, rot: 0 });
+  clipWipe(nodes.guides[0], 13.35, 0.7);
+  animateOpacity(nodes.guides[0], 13.35, 0.45, 0, 0.85);
+  animatePathDrawing(nodes.chevron, 13.45, 0.4, 61, 0.9);
+  animateTextReveal(nodes.standalone8, 14.15, 0.55);
+  animateEmphasis(nodes.standalone8, 14.2);
+  animateTextReveal(nodes.eq, 15.25, 0.9);
+  animatePathDrawing(nodes.eqUnderline, 16.05, 0.4, 52, 1);
+  animateEmphasis(nodes.eq, 15.4);
+  animateCamera(16.7, 1.2, { x: 508, y: 676, zoom: 1.02, rot: 0 });
+
+  /* ---------- SCENE 3 — THE REBOUND PATTERN (18–31s) ---------- */
+  animateTextReveal(nodes.reboteGroups[0].title, 18.05, 0.45);
+  animateOpacity(nodes.standalone8, 18.15, 0.35, 1, 0);
+  animateOpacity(nodes.reboteGroups[0].value, 18.2, 0.4, 0, 1);
+  animatePathDrawing(nodes.groundB, 18.3, 1.3, 12, 1);
+  animateOpacity(nodes.eq, 18.4, 0.6, 1, 0.28);
+  animateOpacity(nodes.eqUnderline, 18.4, 0.6, 1, 0.28);
+
+  for (let n = 2; n <= 5; n++) {
+    const g = nodes.reboteGroups[n - 1];
+    const prev = nodes.reboteGroups[n - 2];
+    const at = apex[n];
+    animateTextReveal(g.title, at + 0.05, 0.4);
+    animateTextReveal(g.value, at + 0.12, 0.45);
+    animateEmphasis(g.value, at + 0.16);
+    animateOpacity(prev.value, at + 0.05, 0.45, 1, 0.45);
+    animateOpacity(prev.title, at + 0.05, 0.45, 1, 0.4);
+    lockArcOpacity(n - 2, at + 0.05);
+    animateOpacity(nodes.arcs[n - 2], at + 0.05, 0.5, 1, 0.32);
+  }
+
+  animateCamera(18.45, apex[2] - 18.45, { x: bounces[1].apexX + 46, y: 768, zoom: 1.04, rot: -0.4 });
+  animateCamera(apex[2], apex[3] - apex[2], { x: bounces[2].apexX + 40, y: 778, zoom: 1.05, rot: -0.32 });
+  animateCamera(apex[3], apex[4] - apex[3], { x: bounces[3].apexX + 28, y: 786, zoom: 1.05, rot: -0.26 });
+  animateCamera(apex[4], Math.max(0.4, apex[5] - apex[4]), { x: bounces[4].apexX + 16, y: 794, zoom: 1.06, rot: -0.16 });
+  animateCamera(27.9, 1.8, { x: 748, y: 692, zoom: 0.54, rot: 0 });
+
+  motion.impacts.forEach(function (w, i) {
+    if (i === 0) return;
+    tl.cue(w.t0, function () {
+      if (allowSound) sound.bounce(Math.sqrt(w.hPrev / initialHeight));
+      addBump(w.t0);
+    });
+  });
+
+  /* ---------- SCENE 4 — GEOMETRIC SEQUENCE (31–42s) ---------- */
+  nodes.reboteGroups.forEach(function (g, i) {
+    const titleFrom = i === 0 ? 1 : 0.4;
+    const valueFrom = i === 0 ? 1 : 0.45;
+    animateOpacity(g.title, 31.1, 0.4, titleFrom, 0.3);
+    animateOpacity(g.value, 31.1, 0.4, valueFrom, 0.3);
+  });
+
+  const sources = [
+    { x: 210, y: 760 },
+    { x: bounces[0].apexX, y: bounces[0].apexY - 60 },
+    { x: bounces[1].apexX, y: bounces[1].apexY - 60 },
+    { x: bounces[2].apexX, y: bounces[2].apexY - 60 },
+    { x: bounces[3].apexX, y: bounces[3].apexY - 60 },
+    { x: bounces[4].apexX, y: bounces[4].apexY - 60 }
+  ];
+  animateCamera(31.45, 2.9, { x: 1660, y: 742, zoom: 0.94, rot: 0.12 });
+  animatePathDrawing(nodes.seqLink, 31.7, 1.5, 155, 0.28);
+
+  nodes.seqNumbers.forEach(function (item, i) {
+    const start = 31.55 + i * 0.2;
+    const fromX = sources[i].x;
+    const fromY = sources[i].y;
+    const toX = item.decimalX;
+    const toY = item.y;
+    remember(function () {
+      item.g.removeAttribute('transform');
+      if (item.g._a) delete item.g._a.transform;
+    });
+    tl.add(start, 2.35, function (e) {
+      const u = cameraEase(e);
+      const x = fromX + (toX - fromX) * u;
+      const y = fromY + (toY - fromY) * u;
+      forceAttr(item.t, 'opacity', Math.min(1, e * 5));
+      if (e >= 1) {
+        item.g.removeAttribute('transform');
+        if (item.g._a) delete item.g._a.transform;
+        forceAttr(item.t, 'opacity', 1);
+        return;
+      }
+      setAttr(item.g, 'transform', 'translate(' + (x - toX).toFixed(2) + ' ' + (y - toY).toFixed(2) + ')');
+    }, linear);
+    animateEmphasis(item.t, start + 2.36);
+  });
+
+  nodes.seqArrows.forEach(function (arrow, i) {
+    animatePathDrawing(arrow, 34.55 + i * 0.42, 0.42, 100 + i, 1);
+    animateTextReveal(nodes.seqMults[i], 34.7 + i * 0.42, 0.4);
+    animateWobble(arrow, 1564, 600, 34.95 + i * 0.42, 0.3);
+  });
+  animateTextReveal(nodes.seqTitle, 37.95, 0.9);
+  animatePathDrawing(nodes.seqUnderline, 38.7, 0.45, 53, 0.85);
+  animateTextReveal(nodes.seqReason, 39.75, 0.8);
+
+  /* ---------- SCENE 5 — GENERAL FORMULA (42–53s) ---------- */
+  animateCamera(42.0, 2.0, { x: 640, y: 1630, zoom: 1.08, rot: 0.15 }, { zoomDip: 0.2 });
+  animateTextReveal(nodes.general, 44.05, 1.15);
+  if (allowSound) { /* scratch is cued below */ }
+  tl.cue(44.05, function () { if (allowSound) sound.scratch(0.7); });
+  nodes.annoArrows.forEach(function (arrow, i) {
+    animatePathDrawing(arrow, 45.85 + i * 0.28, 0.36, 120 + i, 1);
+    animateTextReveal(nodes.annos[i], 46.05 + i * 0.28, 0.4);
+    animateEmphasis(nodes.annos[i], 46.15 + i * 0.28);
+  });
+  animateCamera(47.7, 1.35, { x: 1000, y: 1710, zoom: 0.68, rot: 0 });
+  animatePathDrawing(nodes.transformArrow, 47.85, 0.7, 130, 0.8);
+  animateTextReveal(nodes.substituted, 48.35, 0.85);
+  animateEmphasis(nodes.substituted, 48.5);
+  animateCamera(49.35, 0.7, { x: 1240, y: 1765, zoom: 0.9, rot: 0 });
+  animateTextReveal(nodes.powLine, 49.85, 0.7);
+  animateTextReveal(nodes.prodLine, 50.85, 0.65);
+  animateTextReveal(nodes.resultLine, 51.85, 0.6);
+  animateEmphasis(nodes.resultLine, 51.95);
+  animatePathDrawing(nodes.resultBox, 52.15, 0.55, 140, 1);
+
+  /* ---------- SCENE 6 — VISUAL VERIFICATION (53–62s) ---------- */
+  animateOpacity(nodes.seqLink, 53.0, 0.45, 0.28, 0.06);
+  animateCamera(53.0, 1.7, { x: 760, y: 700, zoom: 0.52, rot: 0 });
+  nodes.ghosts.forEach(function (g, i) {
+    animateOpacity(g, 54.7 + i * 0.12, 0.35, 0, 0.55);
+  });
+  for (let i = 1; i < 5; i++) {
+    clipWipe(nodes.guides[i], 55.3 + (i - 1) * 0.22, 0.45);
+    animateOpacity(nodes.guides[i], 55.3 + (i - 1) * 0.22, 0.35, 0, i === 4 ? 0.95 : 0.55);
+  }
+  animateOpacity(nodes.guides[0], 55.2, 0.4, 0.85, 0.4);
+  lockArcOpacity(4, 56.4);
+  tl.add(56.4, 0.5, function (e) {
+    forceAttr(nodes.arcs[4], 'opacity', 1);
+    forceAttr(nodes.arcs[4], 'stroke', e > 0.5 ? PALETTE.green : PALETTE.ink);
+  }, linear);
+  remember(function () { forceAttr(nodes.arcs[4], 'stroke', PALETTE.ink); });
+  animateOpacity(nodes.fifthRing, 56.5, 0.4, 0, 0.9);
+  animateOpacity(nodes.reboteGroups[4].title, 56.7, 0.35, 1, 0);
+  animateTextReveal(nodes.ordinal, 56.85, 0.45);
+  animateEmphasis(nodes.ordinal, 56.95);
+  nodes.reboteGroups.forEach(function (g, i) {
+    if (i === 4) return;
+    animateOpacity(g.value, 56.6, 0.4, 0.45, 0.4);
+    animateOpacity(g.title, 56.6, 0.4, 0.4, 0.35);
+  });
+  tl.add(56.6, 0.4, function () {
+    forceAttr(nodes.reboteGroups[4].value, 'fill', PALETTE.green);
+  }, linear);
+  remember(function () { forceAttr(nodes.reboteGroups[4].value, 'fill', PALETTE.blue); });
+
+  animateCamera(57.15, 1.35, { x: 1188, y: 804, zoom: 1.08, rot: 0 });
+
+  tl.add(58.7, 1.15, function (e) {
+    const p = easeInOutCubic(e);
+    forceAttr(nodes.reboteGroups[4].value, 'opacity', Math.max(0, 1 - p * 3.2));
+    forceAttr(nodes.roll, 'opacity', p > 0.02 ? 1 : 0);
+    placeRoll(p);
+  }, linear);
+  remember(function () {
+    forceAttr(nodes.roll, 'opacity', 0);
+    placeRoll(0);
+  });
+
+  /* ---------- FINAL SCENE (62–71s) ---------- */
+  animateCamera(62.0, 3.4, { x: 995, y: 1130, zoom: 0.373, rot: 0 }, { ease: easeInOutCubic });
+  animatePathDrawing(nodes.toFormula, 63.1, 1.4, 153, 0.4);
+  animatePathDrawing(nodes.toAnswer, 63.5, 1.3, 151, 0.85);
+  nodes.doodles.forEach(function (d, i) {
+    animatePathDrawing(d, 63.8 + i * 0.25, 0.8, 200 + i, 0.35);
+  });
+
+  animateOpacity(nodes.q1, 63.6, 0.8, 0.62, 1);
+  animateOpacity(nodes.q2, 63.6, 0.8, 0.62, 1);
+  animateOpacity(nodes.eq, 63.8, 0.6, 0.28, 0.85);
+  animateOpacity(nodes.eqUnderline, 63.8, 0.6, 0.28, 0.75);
+  nodes.reboteGroups.forEach(function (g, i) {
+    if (i === 4) return;
+    animateOpacity(g.value, 64.0, 0.5, 0.4, 0.72);
+    animateOpacity(g.title, 64.0, 0.5, 0.35, 0.6);
+  });
+  [0, 1, 2, 3].forEach(function (i) {
+    animateOpacity(nodes.arcs[i], 64.0, 0.5, 0.32, 0.72);
+  });
+
+  animateTextReveal(nodes.finalTitle, 64.6, 0.9);
+  animateTextReveal(nodes.finalAnswer, 65.8, 0.7);
+  animateEmphasis(nodes.finalAnswer, 65.9);
+  animatePathDrawing(nodes.finalUnderline, 66.15, 0.55, 150, 0.9);
+  tl.cue(65.8, function () { if (allowSound) sound.chime(); });
+  animateTextReveal(nodes.finalSub, 66.95, 0.9);
+
+  tl.add(70.5, 0.45, function (e) {
+    forceAttr(nodes.replay, 'opacity', e);
+    forceAttr(nodes.hint, 'opacity', 0.75 * e);
+    if (e >= 1) nodes.replay.setAttribute('tabindex', '0');
+  }, linear);
+  remember(function () {
+    forceAttr(nodes.replay, 'opacity', 0);
+    forceAttr(nodes.hint, 'opacity', 0);
+    nodes.replay.setAttribute('tabindex', '-1');
+  });
+
+  tl.add(0, DURATION, function (_e, _raw, t) {
+    animateBallBounce(t);
+  }, linear);
+
+  tl.cue(0.35, function () { if (allowSound) sound.scratch(0.9); });
+  tl.cue(1.85, function () { if (allowSound) sound.scratch(0.8); });
+  tl.cue(4.7, function () { if (allowSound) sound.scratch(0.45); });
+}
+
+function placeRoll(p) {
+  const w = nodes.rollW;
+  const b = bounces[4];
+  const w0 = w.a + w.digit + w.tail + w.unit;
+  const w1 = w.approx + w.space + w.a + w.digit + w.unit;
+  const width = w0 + (w1 - w0) * p;
+  const origin = b.apexX - width / 2;
+  const y = b.apexY - 60;
+  const approxX = origin;
+  forceAttr(nodes.rollChars.approx, 'x', approxX);
+  forceAttr(nodes.rollChars.approx, 'y', y);
+  forceAttr(nodes.rollChars.approx, 'opacity', p);
+  const aX = origin + (w.approx + w.space) * p;
+  forceAttr(nodes.rollChars.a, 'x', aX);
+  forceAttr(nodes.rollChars.a, 'y', y);
+  forceAttr(nodes.rollChars.a, 'opacity', 1);
+  const dX = aX + w.a;
+  forceAttr(nodes.rollChars.digit7, 'x', dX);
+  forceAttr(nodes.rollChars.digit7, 'y', y - p * w.line);
+  forceAttr(nodes.rollChars.digit7, 'opacity', 1 - p);
+  forceAttr(nodes.rollChars.digit8, 'x', dX);
+  forceAttr(nodes.rollChars.digit8, 'y', y + (1 - p) * w.line);
+  forceAttr(nodes.rollChars.digit8, 'opacity', p);
+  const tailX = dX + w.digit;
+  forceAttr(nodes.rollChars.tail, 'x', tailX);
+  forceAttr(nodes.rollChars.tail, 'y', y);
+  forceAttr(nodes.rollChars.tail, 'opacity', 1 - p);
+  const unitX = tailX + w.tail * (1 - p) + w.space * p;
+  forceAttr(nodes.rollChars.unit, 'x', unitX);
+  forceAttr(nodes.rollChars.unit, 'y', y);
+  forceAttr(nodes.rollChars.unit, 'opacity', 1);
+  setAttr(nodes.roll, 'opacity', nodes.roll.getAttribute('opacity'));
+}
+
+/* =========================================================
+   8. SOUND, RUNTIME, RESTART
+   ========================================================= */
+function createSoundEngine() {
+  let ctx = null;
+  let master = null;
+  let noise = null;
+  let muted = false;
+  function unlock() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return false;
+    if (!ctx) {
+      ctx = new AC();
+      master = ctx.createGain();
+      master.gain.value = 0.9;
+      master.connect(ctx.destination);
+      const len = ctx.sampleRate;
+      noise = ctx.createBuffer(1, len, ctx.sampleRate);
+      const data = noise.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    return true;
+  }
+  function envGain(duration, peak) {
+    const g = ctx.createGain();
+    g.connect(master);
+    const now = ctx.currentTime;
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), now + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    return g;
+  }
+  return {
+    unlock: unlock,
+    get muted() { return muted; },
+    toggleMute: function () {
+      unlock();
+      muted = !muted;
+      if (master) {
+        const now = ctx.currentTime;
+        master.gain.cancelScheduledValues(now);
+        master.gain.setValueAtTime(master.gain.value, now);
+        master.gain.linearRampToValueAtTime(muted ? 0 : 0.9, now + 0.08);
+      }
+      return muted;
+    },
+    scratch: function (duration) {
+      if (!ctx || muted) return;
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 3000;
+      filter.Q.value = 0.7;
+      const g = envGain(duration, 0.035);
+      src.connect(filter);
+      filter.connect(g);
+      src.start();
+      src.stop(ctx.currentTime + duration);
+    },
+    bounce: function (strength) {
+      if (!ctx || muted) return;
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      const g = envGain(0.12, 0.22 * Math.max(0.25, strength));
+      osc.frequency.setValueAtTime(150, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(60, ctx.currentTime + 0.1);
+      osc.connect(g);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.12);
+    },
+    chime: function () {
+      if (!ctx || muted) return;
+      [659.25, 987.77, 1318.5].forEach(function (freq, i) {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        const g = ctx.createGain();
+        g.connect(master);
+        const now = ctx.currentTime + i * 0.03;
+        g.gain.setValueAtTime(0.0001, now);
+        g.gain.exponentialRampToValueAtTime(0.05, now + 0.03);
+        g.gain.exponentialRampToValueAtTime(0.0001, now + 2.2);
+        osc.connect(g);
+        osc.start(now);
+        osc.stop(now + 2.25);
+      });
+    }
+  };
+}
+
+const sound = createSoundEngine();
+let playhead = 0;
+let running = false;
+let lastTs = 0;
+let rafId = 0;
+
+function runResets() {
+  cam.x = camHome.x;
+  cam.y = camHome.y;
+  cam.zoom = camHome.zoom;
+  cam.rot = camHome.rot;
+  bumps.length = 0;
+  resets.forEach(function (fn) { fn(); });
+  forceAttr(nodes.ballFill, 'opacity', 0);
+  forceAttr(nodes.ballHighlight, 'opacity', 0);
+  forceAttr(nodes.ballSeam, 'opacity', 0);
+  forceAttr(nodes.ballOutline, 'opacity', 0);
+}
+
+function seek(t, withSound) {
+  allowSound = !!withSound;
+  runResets();
+  tl.reset();
+  playhead = Math.max(0, t);
+  tl.update(playhead);
+  renderCamera(playhead);
+  allowSound = true;
+}
+
+function frame(now) {
+  if (!running) return;
+  let dt = (now - lastTs) / 1000;
+  lastTs = now;
+  if (document.hidden) {
+    rafId = requestAnimationFrame(frame);
+    return;
+  }
+  if (dt > 0.1) dt = 0.1;
+  if (dt < 0) dt = 0;
+  playhead += dt;
+  tl.update(playhead);
+  renderCamera(playhead);
+  if (playhead >= DURATION) {
+    running = false;
+    return;
+  }
+  rafId = requestAnimationFrame(frame);
+}
+
+function startLoop() {
+  running = true;
+  lastTs = performance.now();
+  cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(frame);
+}
+
+function restartAnimation() {
+  seek(0, false);
+  startLoop();
+}
+
+function visibleOpacity(node) {
+  let o = 1;
+  let n = node;
+  while (n && n !== stage) {
+    const attr = n.getAttribute && n.getAttribute('opacity');
+    if (attr != null && attr !== '') o *= parseFloat(attr);
+    n = n.parentNode;
+  }
+  return o;
+}
+
+function audit() {
+  const warnings = [];
+  const stageBox = stage.getBoundingClientRect();
+  const scale = 720 / stageBox.width;
+  const texts = stage.querySelectorAll('text');
+  const boxes = [];
+  texts.forEach(function (node) {
+    const op = visibleOpacity(node);
+    if (op < 0.4) return;
+    const r = node.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return;
+    const box = {
+      exact: node.getAttribute('data-exact') || node.textContent,
+      x: (r.left - stageBox.left) * scale,
+      y: (r.top - stageBox.top) * scale,
+      w: r.width * scale,
+      h: r.height * scale,
+      op: op
+    };
+    box.cx = box.x + box.w / 2;
+    box.cy = box.y + box.h / 2;
+    if (box.cx < -20 || box.cx > 740 || box.cy < -20 || box.cy > 740) return;
+    boxes.push(box);
+    if (box.x < -2 || box.y < -2 || box.x + box.w > 722 || box.y + box.h > 722) {
+      warnings.push('Fuera del marco: ' + box.exact);
+    }
+  });
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i];
+      const b = boxes[j];
+      const iw = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const ih = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      if (iw > 6 && ih > 6) warnings.push('Solape: ' + a.exact + ' / ' + b.exact);
+    }
+  }
+  return warnings;
+}
+
+function bindInput() {
+  nodes.replay.addEventListener('click', function (event) {
+    event.preventDefault();
+    restartAnimation();
+  });
+  nodes.replay.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      restartAnimation();
+    }
+  });
+  stage.addEventListener('pointerdown', function () { sound.unlock(); });
+  window.addEventListener('keydown', function (event) {
+    sound.unlock();
+    if (event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === 'r' || event.key === 'R') {
+      event.preventDefault();
+      restartAnimation();
+    } else if (event.key === 'm' || event.key === 'M') {
+      event.preventDefault();
+      sound.toggleMute();
+    }
+  });
+}
+
+window.__seek = function (t) {
+  running = false;
+  cancelAnimationFrame(rafId);
+  seek(t, false);
+  return { t: t, camera: { x: cam.x, y: cam.y, zoom: cam.zoom }, warnings: audit() };
+};
+window.__auditHolds = function () {
+  const times = [9.6, 16.9, 30.2, 41.3, 52.4, 61.2, 70.2];
+  const report = times.map(function (t) {
+    seek(t, false);
+    return { t: t, warnings: audit() };
+  });
+  return report;
+};
+window.__restart = restartAnimation;
+window.__apex = motion.apexAt;
+
+function boot() {
+  const params = new URLSearchParams(location.search);
+  const tParam = params.get('t');
+  if (tParam != null && tParam !== '') {
+    const t = parseFloat(tParam);
+    seek(isFinite(t) ? t : 0, false);
+    if (params.has('debug')) console.log(audit());
+    return;
+  }
+  if (params.has('debug')) console.log(window.__auditHolds());
+  seek(0, false);
+  startLoop();
+}
+
+const fontsReady = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
+Promise.race([
+  fontsReady.catch(function () {}),
+  new Promise(function (resolve) { setTimeout(resolve, 900); })
+]).then(function () {
+  createScene();
+  layoutTexts();
+  buildChoreography();
+  bindInput();
+  boot();
+}).catch(function (err) {
+  console.error(err);
+});
+</script>
+</body>
+</html>
