@@ -859,9 +859,36 @@ function createOverlay() {
   forceAttr(nodes.replayRing, 'opacity', 1);
   nodes.replayLabel = handText(nodes.replay, 'Repetir', 40, 22, 16, { exact: 'Repetir' });
   forceAttr(nodes.replayLabel, 'opacity', 1);
-  nodes.hint = handText(overlay, 'R repetir · M sonido', 360, 700, 13, {
-    anchor: 'middle', fill: PALETTE.muted, exact: 'R repetir · M sonido'
+  nodes.hint = handText(overlay, 'Espacio pausa · R repetir · M sonido', 360, 700, 13, {
+    anchor: 'middle', fill: PALETTE.muted, exact: 'Espacio pausa · R repetir · M sonido'
   });
+
+  nodes.pause = el('g', {
+    id: 'pause',
+    opacity: 0,
+    tabindex: '-1',
+    role: 'button',
+    'aria-label': 'Pausar animación',
+    'aria-pressed': 'false',
+    transform: 'translate(36 646)'
+  }, overlay);
+  nodes.pause.style.cursor = 'pointer';
+  nodes.pauseBars = el('g', null, nodes.pause);
+  el('line', {
+    x1: 7, y1: 3, x2: 7, y2: 21,
+    stroke: PALETTE.ink, 'stroke-width': 2.2, 'stroke-linecap': 'round'
+  }, nodes.pauseBars);
+  el('line', {
+    x1: 15, y1: 3, x2: 15, y2: 21,
+    stroke: PALETTE.ink, 'stroke-width': 2.2, 'stroke-linecap': 'round'
+  }, nodes.pauseBars);
+  nodes.pausePlay = el('path', {
+    d: 'M 6 3 L 19 12 L 6 21 Z',
+    fill: PALETTE.ink,
+    opacity: 0
+  }, nodes.pause);
+  nodes.pauseLabel = handText(nodes.pause, 'Pausa', 26, 17, 15, { exact: 'Pausa' });
+  forceAttr(nodes.pauseLabel, 'opacity', 1);
 }
 
 function layoutTexts() {
@@ -1718,6 +1745,11 @@ function createSoundEngine() {
       }
       return muted;
     },
+    hold: function (paused) {
+      if (!ctx) return;
+      if (paused) ctx.suspend();
+      else if (ctx.state === 'suspended') ctx.resume();
+    },
     scratch: function (duration) {
       if (!ctx || muted) return;
       const src = ctx.createBufferSource();
@@ -1766,8 +1798,40 @@ function createSoundEngine() {
 const sound = createSoundEngine();
 let playhead = 0;
 let running = false;
+let paused = false;
 let lastTs = 0;
 let rafId = 0;
+
+function updatePauseChrome() {
+  const finished = playhead >= DURATION - 0.05;
+  const interactive = (running || paused) && !finished;
+  if (!interactive) {
+    forceAttr(nodes.pause, 'opacity', 0);
+    nodes.pause.setAttribute('tabindex', '-1');
+    return;
+  }
+  forceAttr(nodes.pause, 'opacity', paused ? 1 : 0.72);
+  nodes.pause.setAttribute('tabindex', '0');
+  nodes.pause.setAttribute('aria-pressed', paused ? 'true' : 'false');
+  nodes.pause.setAttribute('aria-label', paused ? 'Seguir animación' : 'Pausar animación');
+  forceAttr(nodes.pauseBars, 'opacity', paused ? 0 : 1);
+  forceAttr(nodes.pausePlay, 'opacity', paused ? 1 : 0);
+  nodes.pauseLabel.textContent = paused ? 'Seguir' : 'Pausa';
+}
+
+function togglePause() {
+  if (playhead >= DURATION - 0.05) return;
+  paused = !paused;
+  if (paused) {
+    running = false;
+    cancelAnimationFrame(rafId);
+    sound.hold(true);
+  } else {
+    sound.hold(false);
+    startLoop();
+  }
+  updatePauseChrome();
+}
 
 function runResets() {
   cam.x = camHome.x;
@@ -1790,6 +1854,7 @@ function seek(t, withSound) {
   tl.update(playhead);
   renderCamera(playhead);
   allowSound = true;
+  updatePauseChrome();
 }
 
 function frame(now) {
@@ -1807,6 +1872,8 @@ function frame(now) {
   renderCamera(playhead);
   if (playhead >= DURATION) {
     running = false;
+    paused = false;
+    updatePauseChrome();
     return;
   }
   rafId = requestAnimationFrame(frame);
@@ -1814,12 +1881,16 @@ function frame(now) {
 
 function startLoop() {
   running = true;
+  paused = false;
   lastTs = performance.now();
   cancelAnimationFrame(rafId);
   rafId = requestAnimationFrame(frame);
+  updatePauseChrome();
 }
 
 function restartAnimation() {
+  paused = false;
+  sound.hold(false);
   seek(0, false);
   startLoop();
 }
@@ -1880,16 +1951,32 @@ function bindInput() {
     restartAnimation();
   });
   nodes.replay.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter' || (event.key === ' ' && playhead >= DURATION - 0.05)) {
+      event.preventDefault();
+      event.stopPropagation();
+      restartAnimation();
+    }
+  });
+  nodes.pause.addEventListener('click', function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    togglePause();
+  });
+  nodes.pause.addEventListener('keydown', function (event) {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      restartAnimation();
+      event.stopPropagation();
+      togglePause();
     }
   });
   stage.addEventListener('pointerdown', function () { sound.unlock(); });
   window.addEventListener('keydown', function (event) {
     sound.unlock();
     if (event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
-    if (event.key === 'r' || event.key === 'R') {
+    if (event.key === ' ' || event.code === 'Space') {
+      event.preventDefault();
+      togglePause();
+    } else if (event.key === 'r' || event.key === 'R') {
       event.preventDefault();
       restartAnimation();
     } else if (event.key === 'm' || event.key === 'M') {
@@ -1901,6 +1988,7 @@ function bindInput() {
 
 window.__seek = function (t) {
   running = false;
+  paused = false;
   cancelAnimationFrame(rafId);
   seek(t, false);
   return { t: t, camera: { x: cam.x, y: cam.y, zoom: cam.zoom }, warnings: audit() };
